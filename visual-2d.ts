@@ -1,6 +1,3 @@
-
-
-
 import {LitElement, css, html} from 'lit';
 import {customElement, property} from 'lit/decorators.js';
 import {Analyser} from './analyser';
@@ -36,8 +33,8 @@ export class GdmLiveAudioVisuals2D extends LitElement {
   `;
 
   protected firstUpdated() {
-    // Access canvas via renderRoot (standard Lit approach) to resolve the shadowRoot property error.
-    this.canvas = (this.renderRoot as HTMLElement).querySelector('canvas') as HTMLCanvasElement;
+    // Fix: Use type assertion to any to access shadowRoot and avoid TypeScript error on LitElement.
+    this.canvas = (this as any).shadowRoot!.querySelector('canvas') as HTMLCanvasElement;
     this.ctx = this.canvas.getContext('2d') as CanvasRenderingContext2D;
     this.resize();
     window.addEventListener('resize', () => this.resize());

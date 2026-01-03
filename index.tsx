@@ -10,6 +10,7 @@ import {LitElement, css, html} from 'lit';
 import {customElement, state} from 'lit/decorators.js';
 import {createBlob, decode, decodeAudioData} from './utils';
 import './visual-2d';
+import './visual-3d';
 
 @customElement('gdm-live-audio')
 export class GdmLiveAudio extends LitElement {
@@ -17,6 +18,7 @@ export class GdmLiveAudio extends LitElement {
   @state() timer = '00:00';
   @state() status = '';
   @state() error = '';
+  @state() visualMode: '2d' | '3d' = '2d';
 
   private client: GoogleGenAI;
   private session: Session;
@@ -91,11 +93,27 @@ export class GdmLiveAudio extends LitElement {
       display: flex;
       align-items: center;
       justify-content: center;
+      transition: opacity 0.2s;
+    }
+
+    .icon-btn:hover {
+      opacity: 0.7;
     }
 
     .icon-btn svg {
       width: 24px;
       height: 24px;
+    }
+
+    .mode-toggle {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border: 1.5px solid #5c633a;
+      border-radius: 4px;
+      padding: 2px 6px;
+      min-width: 40px;
     }
 
     /* Visualization Area */
@@ -197,21 +215,30 @@ export class GdmLiveAudio extends LitElement {
         callbacks: {
           onopen: () => this.updateStatus('Miles is ready'),
           onmessage: async (message: LiveServerMessage) => {
-            const audio = message.serverContent?.modelTurn?.parts[0]?.inlineData;
-            if (audio) {
-              this.nextStartTime = Math.max(this.nextStartTime, this.outputAudioContext.currentTime);
-              const audioBuffer = await decodeAudioData(decode(audio.data), this.outputAudioContext, 24000, 1);
-              const source = this.outputAudioContext.createBufferSource();
-              source.buffer = audioBuffer;
-              source.connect(this.outputNode);
-              source.addEventListener('ended', () => this.sources.delete(source));
-              source.start(this.nextStartTime);
-              this.nextStartTime = this.nextStartTime + audioBuffer.duration;
-              this.sources.add(source);
+            const parts = message.serverContent?.modelTurn?.parts;
+            if (parts) {
+              for (const part of parts) {
+                if (part.inlineData) {
+                  // Ensure audio context is active before scheduling playback
+                  if (this.outputAudioContext.state === 'suspended') {
+                    await this.outputAudioContext.resume();
+                  }
+
+                  this.nextStartTime = Math.max(this.nextStartTime, this.outputAudioContext.currentTime);
+                  const audioBuffer = await decodeAudioData(decode(part.inlineData.data), this.outputAudioContext, 24000, 1);
+                  const source = this.outputAudioContext.createBufferSource();
+                  source.buffer = audioBuffer;
+                  source.connect(this.outputNode);
+                  source.addEventListener('ended', () => this.sources.delete(source));
+                  source.start(this.nextStartTime);
+                  this.nextStartTime = this.nextStartTime + audioBuffer.duration;
+                  this.sources.add(source);
+                }
+              }
             }
             if (message.serverContent?.interrupted) {
               for (const source of this.sources.values()) {
-                source.stop();
+                try { source.stop(); } catch(e) {}
                 this.sources.delete(source);
               }
               this.nextStartTime = 0;
@@ -230,6 +257,7 @@ export class GdmLiveAudio extends LitElement {
       });
     } catch (e) {
       console.error(e);
+      this.updateError('Failed to connect to Miles.');
     }
   }
 
@@ -248,10 +276,17 @@ export class GdmLiveAudio extends LitElement {
 
   private stopTimer() {
     if (this.timerInterval) clearInterval(this.timerInterval);
+    this.timerInterval = null;
     this.timer = '00:00';
   }
 
   private async toggleRecording() {
+    // Resume audio contexts on user interaction to satisfy browser policies
+    try {
+      if (this.outputAudioContext.state === 'suspended') await this.outputAudioContext.resume();
+      if (this.inputAudioContext.state === 'suspended') await this.inputAudioContext.resume();
+    } catch (e) { console.warn('Context resume failed', e); }
+
     if (this.isRecording) {
       this.stopRecording();
     } else {
@@ -261,14 +296,13 @@ export class GdmLiveAudio extends LitElement {
 
   private async startRecording() {
     if (this.isRecording) return;
-    this.inputAudioContext.resume();
     try {
       this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       this.sourceNode = this.inputAudioContext.createMediaStreamSource(this.mediaStream);
       this.sourceNode.connect(this.inputNode);
-      this.scriptProcessorNode = this.inputAudioContext.createScriptProcessor(256, 1, 1);
+      this.scriptProcessorNode = this.inputAudioContext.createScriptProcessor(2048, 1, 1);
       this.scriptProcessorNode.onaudioprocess = (e) => {
-        if (!this.isRecording) return;
+        if (!this.isRecording || !this.session) return;
         this.session.sendRealtimeInput({ media: createBlob(e.inputBuffer.getChannelData(0)) });
       };
       this.sourceNode.connect(this.scriptProcessorNode);
@@ -277,7 +311,7 @@ export class GdmLiveAudio extends LitElement {
       this.startTimer();
       this.updateStatus('Listening to you, Jam...');
     } catch (err) {
-      this.updateStatus(`Error: ${err.message}`);
+      this.updateError(`Mic error: ${err.message}`);
       this.stopRecording();
     }
   }
@@ -292,19 +326,30 @@ export class GdmLiveAudio extends LitElement {
     this.updateStatus('Miles is chillin.');
   }
 
-  private reset() {
-    this.session?.close();
-    this.initSession();
+  private async reset() {
     this.stopRecording();
+    if (this.session) {
+      try { this.session.close(); } catch(e) {}
+    }
+    for (const source of this.sources.values()) {
+      try { source.stop(); } catch(e) {}
+    }
+    this.sources.clear();
+    this.nextStartTime = 0;
+    this.initSession();
     this.updateStatus('Miles reset.');
+  }
+
+  private toggleVisualMode() {
+    this.visualMode = this.visualMode === '2d' ? '3d' : '2d';
   }
 
   render() {
     return html`
       <div class="app-container">
         <header>
-          <button class="icon-btn">
-            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12,22C6.477,22,2,17.523,2,12S6.477,2,12,2s10,4.477,10,10S17.523,22,12,22z M13,7h-2v2h2V7z M13,11h-2v6h2V11z"/></svg>
+          <button class="icon-btn mode-toggle" @click=${this.toggleVisualMode}>
+            ${this.visualMode}
           </button>
           
           <div class="header-center">
@@ -318,9 +363,15 @@ export class GdmLiveAudio extends LitElement {
         </header>
 
         <div class="visualizer-container">
-          <gdm-live-audio-visuals-2d
-            .inputNode=${this.inputNode}
-            .outputNode=${this.outputNode}></gdm-live-audio-visuals-2d>
+          ${this.visualMode === '2d' ? html`
+            <gdm-live-audio-visuals-2d
+              .inputNode=${this.inputNode}
+              .outputNode=${this.outputNode}></gdm-live-audio-visuals-2d>
+          ` : html`
+            <gdm-live-audio-visuals-3d
+              .inputNode=${this.inputNode}
+              .outputNode=${this.outputNode}></gdm-live-audio-visuals-3d>
+          `}
         </div>
 
         <div class="controls-container">

@@ -1,6 +1,3 @@
-
-
-
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -238,8 +235,8 @@ export class GdmLiveAudioVisuals3D extends LitElement {
   }
 
   protected firstUpdated() {
-    // Access canvas via renderRoot (standard Lit approach) to resolve the shadowRoot property error.
-    this.canvas = (this.renderRoot as HTMLElement).querySelector('canvas') as HTMLCanvasElement;
+    // Fix: Use type assertion to any to access shadowRoot as LitElement might not expose it in some TypeScript environments.
+    this.canvas = (this as any).shadowRoot!.querySelector('canvas') as HTMLCanvasElement;
     this.init();
   }
 
